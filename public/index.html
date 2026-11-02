@@ -1,0 +1,223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lean Ledger</title>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;700&family=Instrument+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{--bg:#E8ECE4;--card:#F6F7F2;--ink:#16252A;--mute:#5B6B6E;--line:#C9D1C6;--pro:#1F6B58;--warn:#B8452A}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 'Instrument Sans',system-ui,sans-serif}
+main{max-width:720px;margin:0 auto;padding:20px 16px 64px}
+h1,h2,.num{font-family:'Bricolage Grotesque',Georgia,serif;font-weight:700;margin:0}
+h1{font-size:26px}h2{font-size:19px;margin:28px 0 10px}
+header{display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+nav{display:flex;gap:20px;border-bottom:1px solid var(--line);margin:14px 0 18px}
+nav button{background:none;border:0;padding:8px 0;font:inherit;color:var(--mute);cursor:pointer;border-bottom:3px solid transparent}
+nav button.on{color:var(--ink);font-weight:600;border-color:var(--pro)}
+button,input,select{font:inherit;color:inherit}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid var(--pro);outline-offset:2px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin-bottom:14px}
+.mute{color:var(--mute);font-size:14px}
+.big{font-size:56px;line-height:1}
+.row{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.bar{height:8px;background:#DDE3DA;border-radius:4px;overflow:hidden;margin:4px 0 12px}
+.bar i{display:block;height:100%;background:var(--ink)}
+.bar.pro{height:14px}.bar.pro i{background:var(--pro)}
+.bar.over i{background:var(--warn)}
+.entry{display:flex;justify-content:space-between;gap:8px;padding:8px 0;border-top:1px solid var(--line)}
+.entry:first-of-type{border-top:0}
+.x{background:none;border:0;color:var(--mute);cursor:pointer;font-size:18px;padding:0 6px}
+input,select{padding:8px 10px;border:1px solid var(--line);border-radius:6px;background:#fff;min-width:0}
+input[type=number]{width:84px}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}
+.grid input{width:100%}
+label{display:flex;flex-direction:column;gap:4px;font-size:14px;color:var(--mute)}
+.btn{background:var(--pro);color:#fff;border:0;border-radius:6px;padding:9px 16px;cursor:pointer;font-weight:600}
+.btn.ghost{background:none;color:var(--ink);border:1px solid var(--line)}
+.warn{color:var(--warn);font-size:14px}
+.res{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:8px 0;border-top:1px solid var(--line)}
+@media(max-width:520px){.big{font-size:44px}}
+</style>
+</head>
+<body>
+<main>
+<header><h1>Lean Ledger</h1><div id="dnav"></div></header>
+<nav id="tabs"></nav>
+<p id="msg" class="warn" role="alert"></p>
+<div id="view"></div>
+</main>
+
+<script>
+const MEALS=['Breakfast','Lunch','Dinner','Snacks'];
+const $=s=>document.querySelector(s);
+const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const r1=n=>Math.round(n*10)/10;
+const iso=d=>d.toLocaleDateString('en-CA');
+const shift=(d,n)=>{const t=new Date(d+'T12:00:00');t.setDate(t.getDate()+n);return iso(t)};
+
+let token=null;try{token=localStorage.getItem('ll-token')}catch(e){}
+const empty=()=>({profile:null,T:null,custom:[],log:[],weights:{},results:[]});
+let S=empty(),date=iso(new Date()),tab='today',q='',meal='Breakfast';
+
+// ---------- API client ----------
+async function api(path,o={}){
+  const r=await fetch('/api'+path,{method:o.method||'GET',
+    headers:{'Content-Type':'application/json',...(token?{Authorization:'Bearer '+token}:{})},
+    body:o.body?JSON.stringify(o.body):undefined});
+  const j=await r.json().catch(()=>null);
+  if(r.status===401&&token){logout();throw null}
+  if(!r.ok)throw new Error((j&&j.error)||'Something went wrong. Try again.');
+  return j;
+}
+function setToken(t){token=t;try{t?localStorage.setItem('ll-token',t):localStorage.removeItem('ll-token')}catch(e){}}
+function logout(){setToken(null);S=empty();tab='today';render()}
+function fail(e){$('#msg').textContent=e&&e.message?e.message:''}
+async function loadAll(){
+  try{
+    const[p,T,c,w,l]=await Promise.all([api('/profile'),api('/targets'),api('/foods/mine'),api('/weights'),api('/log?day='+date)]);
+    S={profile:p,T,custom:c,weights:Object.fromEntries(w.map(x=>[x.day,x.kg])),log:l,results:S.results};
+    if(!p)tab='goals';fail();
+  }catch(e){fail(e)}
+  render();
+}
+async function refreshLog(){try{S.log=await api('/log?day='+date);fail()}catch(e){fail(e)}render()}
+const curW=()=>{const k=Object.keys(S.weights).sort();return k.length?S.weights[k[k.length-1]]:(S.profile?S.profile.w:70)};
+
+// ---------- navigation ----------
+function renderNav(){
+  if(!token){$('#dnav').innerHTML='';$('#tabs').innerHTML='';return}
+  $('#dnav').innerHTML=`<button class="btn ghost" onclick="go(-1)" aria-label="Previous day">‹</button>
+  <strong style="margin:0 8px">${new Date(date+'T12:00:00').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})}</strong>
+  <button class="btn ghost" onclick="go(1)" aria-label="Next day">›</button>
+  <button class="btn ghost" onclick="logout()" style="margin-left:8px">Log out</button>`;
+  $('#tabs').innerHTML=[['today','Today'],['weight','Weight'],['foods','My foods'],['goals','Goals']]
+    .map(t=>`<button class="${tab===t[0]?'on':''}" onclick="tab='${t[0]}';render()">${t[1]}</button>`).join('');
+}
+function go(n){date=shift(date,n);refreshLog()}
+
+// ---------- auth ----------
+const viewAuth=()=>`<div class="card"><div class="grid">
+  <label>Email<input id="em" type="email" autocomplete="username"></label>
+  <label>Password (8+ characters)<input id="pw" type="password" autocomplete="current-password"></label></div>
+  <p><button class="btn" onclick="doAuth('login')">Log in</button> <button class="btn ghost" onclick="doAuth('register')">Create account</button></p></div>`;
+async function doAuth(kind){
+  try{const r=await api('/'+kind,{method:'POST',body:{email:$('#em').value,password:$('#pw').value}});setToken(r.token);await loadAll()}
+  catch(e){fail(e)}
+}
+
+// ---------- today ----------
+function totals(){return S.log.reduce((a,e)=>{for(const k of['kcal','p','c','f','na','fi'])a[k]+=e[k];return a},{kcal:0,p:0,c:0,f:0,na:0,fi:0})}
+function bar(label,val,tgt,unit,cls=''){
+  const pct=tgt?Math.min(100,val/tgt*100):0,over=val>tgt&&cls!=='pro'?' over':'';
+  return`<div class="row"><span>${label}</span><span class="mute">${Math.round(val)} / ${tgt} ${unit}</span></div><div class="bar ${cls}${over}"><i style="width:${pct}%"></i></div>`;
+}
+function viewToday(){
+  const T=S.T,t=totals(),left=T.k-Math.round(t.kcal);
+  let h=`<div class="card"><div class="row"><span class="num big">${Math.abs(left)}</span><span class="mute">${left>=0?'calories left':'calories over'}</span></div>
+  <div class="bar ${left<0?'over':''}"><i style="width:${Math.min(100,t.kcal/T.k*100)}%"></i></div>
+  ${bar('Protein',t.p,T.p,'g','pro')}${bar('Carbs',t.c,T.c,'g')}${bar('Fat',t.f,T.f,'g')}${bar('Sodium',t.na,T.na,'mg')}
+  <div class="mute">Fiber ${Math.round(t.fi)} g · Calories ${Math.round(t.kcal)} of ${T.k}</div></div>`;
+  for(const m of MEALS){
+    const es=S.log.filter(e=>e.meal===m);
+    h+=`<div class="card"><div class="row"><strong>${m}</strong><span class="mute">${Math.round(es.reduce((a,e)=>a+e.kcal,0))} kcal</span></div>`;
+    h+=es.length?es.map(e=>`<div class="entry"><span>${esc(e.name)}<br><span class="mute">${e.qty} × ${esc(e.sv)} · ${Math.round(e.kcal)} kcal · ${r1(e.p)} g protein</span></span><button class="x" onclick="del('${e.id}')" aria-label="Remove">×</button></div>`).join(''):'<p class="mute" style="margin:6px 0 0">Nothing logged yet.</p>';
+    h+='</div>';
+  }
+  return h+`<h2>Add food</h2><div class="card"><div style="display:flex;gap:8px;flex-wrap:wrap">
+  <input id="q" placeholder="Search foods" value="${esc(q)}" oninput="q=this.value;res()" style="flex:1;min-width:160px">
+  <select onchange="meal=this.value">${MEALS.map(m=>`<option ${m===meal?'selected':''}>${m}</option>`).join('')}</select></div><div id="res"></div></div>`;
+}
+async function res(){
+  try{S.results=await api('/foods?q='+encodeURIComponent(q.trim()))}catch(e){return}
+  const box=$('#res');if(!box)return;
+  box.innerHTML=S.results.length?S.results.map(f=>`<div class="res"><span>${esc(f.n)}<br><span class="mute">${esc(f.s)} · ${f.k} kcal · ${f.p} g protein</span></span>
+  <span><input type="number" id="qty${f.id}" value="1" min="0.25" step="0.25" aria-label="Servings"> <button class="btn" onclick="addFood('${f.id}')">Add</button></span></div>`).join(''):'<p class="mute">No match. Create it under My foods.</p>';
+}
+async function addFood(id){
+  try{await api('/log',{method:'POST',body:{day:date,meal,foodId:id,qty:parseFloat($('#qty'+id).value)||1}});await refreshLog()}catch(e){fail(e)}
+}
+async function del(id){try{await api('/log/'+id,{method:'DELETE'});await refreshLog()}catch(e){fail(e)}}
+
+// ---------- weight ----------
+function chart(){
+  const d=Object.keys(S.weights).sort().slice(-30);
+  if(d.length<2)return'<p class="mute">Log at least two weigh-ins to see a trend.</p>';
+  const v=d.map(k=>S.weights[k]),avg=v.map((_,i)=>{const s=v.slice(Math.max(0,i-6),i+1);return s.reduce((a,b)=>a+b)/s.length});
+  const lo=Math.min(...v)-.5,hi=Math.max(...v)+.5,X=i=>20+i*560/(d.length-1),Y=x=>180-(x-lo)/(hi-lo)*160;
+  const dots=v.map((x,i)=>`<circle cx="${X(i)}" cy="${Y(x)}" r="3" fill="#9AA7A0"/>`).join('');
+  const line=avg.map((x,i)=>`${X(i)},${Y(x)}`).join(' ');
+  const j=Math.max(0,d.length-8),days=(new Date(d[d.length-1])-new Date(d[j]))/864e5;
+  let msg='';
+  if(days>=5){
+    const rate=(avg[avg.length-1]-avg[j])/days*7,pct=-rate/curW()*100;
+    msg=`<p>Trend: ${rate<=0?'down':'up'} ${r1(Math.abs(rate))} kg per week (${r1(Math.abs(pct))}% of bodyweight).</p>
+    <p class="${pct>1?'warn':'mute'}">${pct>1?'That is faster than about 1% per week, which raises the risk of losing muscle. Consider eating a little more.':pct<.2?'Weight is holding steady. If this lasts two or more weeks, a small calorie trim may help.':'This is within a muscle-friendly range.'}</p>`;
+  }
+  return`<svg viewBox="0 0 600 200" width="100%" role="img" aria-label="Weight trend">${dots}<polyline points="${line}" fill="none" stroke="#1F6B58" stroke-width="3"/></svg>
+  <div class="mute">Dots are weigh-ins. The line is a 7-entry average.</div>${msg}`;
+}
+function viewWeight(){
+  const ks=Object.keys(S.weights).sort().reverse().slice(0,7);
+  return`<div class="card"><div style="display:flex;gap:8px;align-items:end;flex-wrap:wrap"><label>Weight for this day (kg)<input type="number" id="w" step="0.1" value="${S.weights[date]||''}"></label>
+  <button class="btn" onclick="saveW()">Save weight</button></div></div>
+  <div class="card">${chart()}</div>
+  <div class="card">${ks.length?ks.map(k=>`<div class="row entry"><span>${k}</span><strong>${S.weights[k]} kg</strong></div>`).join(''):'<p class="mute">No weigh-ins yet.</p>'}</div>`;
+}
+async function saveW(){
+  try{await api('/weights/'+date,{method:'PUT',body:{kg:parseFloat($('#w').value)}});await loadAll()}catch(e){fail(e)}
+}
+
+// ---------- my foods ----------
+function viewFoods(){
+  const f=(id,l,ph='')=>`<label>${l}<input id="${id}" ${id==='cn'||id==='cs'?'':'type="number" step="0.1" min="0"'} placeholder="${ph}"></label>`;
+  return`<div class="card"><strong>Create a food</strong><p class="mute">Enter the values for one serving, as printed on the label.</p>
+  <div class="grid">${f('cn','Name')}${f('cs','Serving','1 cup')}${f('ck','Calories')}${f('cp','Protein (g)')}${f('cc','Carbs (g)')}${f('cf','Fat (g)')}${f('cna','Sodium (mg)')}${f('cfi','Fiber (g)')}</div>
+  <p><button class="btn" onclick="addCustom()">Save food</button></p></div>
+  <div class="card">${S.custom.length?S.custom.map(c=>`<div class="entry"><span>${esc(c.n)}<br><span class="mute">${esc(c.s)} · ${c.k} kcal · ${c.p} g protein</span></span><button class="x" onclick="delCustom('${c.id}')" aria-label="Delete food">×</button></div>`).join(''):'<p class="mute">Your saved foods will appear here.</p>'}</div>`;
+}
+async function addCustom(){
+  const g=id=>$('#'+id).value,n=id=>parseFloat(g(id))||0;
+  try{await api('/foods',{method:'POST',body:{n:g('cn'),s:g('cs'),k:n('ck'),p:n('cp'),c:n('cc'),f:n('cf'),na:n('cna'),fi:n('cfi')}});S.custom=await api('/foods/mine');fail();render()}catch(e){fail(e)}
+}
+async function delCustom(id){try{await api('/foods/'+id,{method:'DELETE'});S.custom=await api('/foods/mine');render()}catch(e){fail(e)}}
+
+// ---------- goals ----------
+function viewGoals(){
+  const p=S.profile||{sex:'m',a:30,h:175,w:80,gw:75,act:1.55,def:400,ppk:2,na:2300},T=S.T;
+  const n=(id,l,v,st=1)=>`<label>${l}<input type="number" id="${id}" value="${v}" step="${st}" min="0"></label>`;
+  return`<div class="card"><div class="grid">
+  <label>Sex<select id="sex"><option value="m" ${p.sex==='m'?'selected':''}>Male</option><option value="f" ${p.sex==='f'?'selected':''}>Female</option></select></label>
+  ${n('age','Age',p.a)}${n('ht','Height (cm)',p.h)}${n('wt','Starting weight (kg)',p.w,.1)}${n('gw','Goal weight (kg)',p.gw,.1)}
+  <label>Activity<select id="act">${[[1.2,'Mostly sitting'],[1.375,'Light, 1–3 days'],[1.55,'Moderate, 3–5 days'],[1.725,'Heavy, 6–7 days']].map(a=>`<option value="${a[0]}" ${a[0]===p.act?'selected':''}>${a[1]}</option>`).join('')}</select></label>
+  ${n('def','Daily deficit (kcal)',p.def,50)}${n('ppk','Protein (g per kg)',p.ppk,.1)}${n('na','Sodium limit (mg)',p.na,100)}</div>
+  <p><button class="btn" onclick="saveGoals()">Save goals</button></p></div>
+  ${T?`<div class="card"><strong>Your daily targets</strong><p>${T.k} kcal · ${T.p} g protein · ${T.c} g carbs · ${T.f} g fat · ${T.na} mg sodium</p>
+  <p class="mute">Estimated maintenance is ${T.tdee} kcal. Resting burn is about ${T.bmr} kcal.</p>
+  ${T.k<T.bmr?'<p class="warn">This target is below your estimated resting burn. Consider a smaller deficit.</p>':''}
+  ${T.pct>1?'<p class="warn">This deficit would lose more than 1% of bodyweight per week, which risks muscle loss.</p>':''}
+  <p class="mute">These are general starting points, not medical advice. Adjust using your weight trend.</p></div>`:''}`;
+}
+async function saveGoals(){
+  const g=id=>parseFloat($('#'+id).value),p={sex:$('#sex').value,a:g('age'),h:g('ht'),w:g('wt'),gw:g('gw'),act:g('act'),def:g('def'),ppk:g('ppk'),na:g('na')};
+  try{
+    await api('/profile',{method:'PUT',body:p});
+    const t=iso(new Date());
+    if(!S.weights[t])await api('/weights/'+t,{method:'PUT',body:{kg:p.w}});
+    tab='today';await loadAll();
+  }catch(e){fail(e)}
+}
+
+// ---------- render ----------
+function render(){
+  renderNav();
+  const v=$('#view');
+  if(!token){v.innerHTML=viewAuth();return}
+  v.innerHTML=tab==='today'&&S.profile?viewToday():tab==='weight'&&S.profile?viewWeight():tab==='foods'?viewFoods():viewGoals();
+  if($('#res'))res();
+}
+token?loadAll():render();
+</script>
+</body>
+</html>

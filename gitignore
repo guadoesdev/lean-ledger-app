@@ -1,0 +1,12 @@
+# Secrets: never upload these
+.env
+.env.*
+!.env.example
+
+# Installed packages (rebuilt by npm install)
+node_modules/
+
+# Logs and system files
+*.log
+.DS_Store
+Thumbs.db
