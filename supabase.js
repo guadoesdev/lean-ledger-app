@@ -71,5 +71,5 @@ async function removeLog(uid, id) {
   if (isId(id)) ok(await sb.from('log_entries').delete().eq('id', id).eq('user_id', uid));
 }
 
-module.exports = { userByEmail, createUser, getProfile, saveProfile, listWeights, saveWeight,
+module.exports = { sb, userByEmail, createUser, getProfile, saveProfile, listWeights, saveWeight,
   searchFoods, myFoods, getFood, createFood, removeFood, hasBuiltInFoods, listLog, addLog, removeLog };

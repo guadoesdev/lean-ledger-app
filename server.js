@@ -3,12 +3,13 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const path = require('path');
 const dv = require('./supabase');
+const ai = require('./ai-meals');
 
 const SECRET = process.env.JWT_SECRET || 'dev-only-change-me';
 if (!process.env.JWT_SECRET) console.warn('Warning: set JWT_SECRET before deploying.');
 
 const app = express();
-app.use(express.json({ limit: '50kb' }));
+app.use(express.json({ limit: '8mb' })); // large enough for compressed meal photos
 app.use(express.static(path.join(__dirname, 'public')));
 
 const MEALS = ['Breakfast', 'Lunch', 'Dinner', 'Snacks'];
@@ -90,7 +91,7 @@ app.delete('/api/foods/:id', h(async (req, res) => { await dv.removeFood(req.uid
 // ---------- food log ----------
 app.get('/api/log', h(async (req, res) => {
   if (!DAY.test(req.query.day || '')) return bad(res, 'Invalid date.');
-  res.json(await dv.listLog(req.uid, req.query.day));
+  res.json([...(await dv.listLog(req.uid, req.query.day)), ...(await ai.itemsAsLog(req.uid, req.query.day))]);
 }));
 app.post('/api/log', h(async (req, res) => {
   const { day, meal, foodId, qty } = req.body || {};
@@ -101,7 +102,11 @@ app.post('/api/log', h(async (req, res) => {
     kcal: r1(f.k * qty), p: r1(f.p * qty), c: r1(f.c * qty), f: r1(f.f * qty), na: r1(f.na * qty), fi: r1(f.fi * qty) });
   res.json({ id });
 }));
-app.delete('/api/log/:id', h(async (req, res) => { await dv.removeLog(req.uid, req.params.id); res.json({ ok: true }); }));
+app.delete('/api/log/:id', h(async (req, res) => {
+  const id = String(req.params.id);
+  if (id[0] === 'm') await ai.removeItem(req.uid, id.slice(1)); else await dv.removeLog(req.uid, id);
+  res.json({ ok: true });
+}));
 
 // ---------- weights ----------
 app.get('/api/weights', h(async (req, res) => res.json(await dv.listWeights(req.uid))));
@@ -112,6 +117,7 @@ app.put('/api/weights/:day', h(async (req, res) => {
   res.json({ ok: true });
 }));
 
+ai.mount(app, { h, bad, DAY, MEALS });
 app.use('/api', (req, res) => bad(res, 'Not found.', 404));
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => console.log('Lean Ledger running on http://localhost:' + PORT));

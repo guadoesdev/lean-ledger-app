@@ -92,7 +92,7 @@ function renderNav(){
   <strong style="margin:0 8px">${new Date(date+'T12:00:00').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})}</strong>
   <button class="btn ghost" onclick="go(1)" aria-label="Next day">›</button>
   <button class="btn ghost" onclick="logout()" style="margin-left:8px">Log out</button>`;
-  $('#tabs').innerHTML=[['today','Today'],['weight','Weight'],['foods','My foods'],['goals','Goals']]
+  $('#tabs').innerHTML=[['today','Today'],['ai','AI meal'],['summary','Summary'],['weight','Weight'],['foods','My foods'],['goals','Goals']]
     .map(t=>`<button class="${tab===t[0]?'on':''}" onclick="tab='${t[0]}';render()">${t[1]}</button>`).join('');
 }
 function go(n){date=shift(date,n);refreshLog()}
@@ -214,10 +214,11 @@ function render(){
   renderNav();
   const v=$('#view');
   if(!token){v.innerHTML=viewAuth();return}
-  v.innerHTML=tab==='today'&&S.profile?viewToday():tab==='weight'&&S.profile?viewWeight():tab==='foods'?viewFoods():viewGoals();
+  v.innerHTML=tab==='ai'&&S.profile?viewAI():tab==='summary'&&S.profile?viewSummary():tab==='today'&&S.profile?viewToday():tab==='weight'&&S.profile?viewWeight():tab==='foods'?viewFoods():viewGoals();
   if($('#res'))res();
 }
 token?loadAll():render();
 </script>
+<script src="/ai.js"></script>
 </body>
 </html>
