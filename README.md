@@ -28,11 +28,11 @@ Open http://localhost:3000 and create an account.
 - Login is still handled by this app (email, bcrypt-hashed password, JWT). If you would rather use Supabase Auth, the data layer can be changed to rely on row level security policies instead.
 - Before going live: HTTPS, a strong `JWT_SECRET`, login rate limiting, and keeping `.env` out of source control.
 
-## AI meal logging (Gemini)
+## AI meal chat (Gemini)
 1. In Supabase, run `schema_ai.sql`, then `schema_ai_v2.sql`.
 2. Add keys to `.env` and to Render's environment variables: `GEMINI_API_KEY` (Google AI Studio) and `USDA_API_KEY` (free, fdc.nal.usda.gov). Nutritionix and Edamam are optional.
-3. Open the **AI meal** tab, describe a meal or upload a photo, and choose **Analyze meal**.
+3. On the **Today** tab, type what you ate in the chat, or add a photo, and press Send.
 
-Flow: Gemini identifies foods, ingredients, portions, the meal type and confidence scores. If anything is below `CONFIDENCE_THRESHOLD`, or a portion can't be estimated, you are asked first and no nutrition lookup happens. Otherwise nutrition is looked up in this order: USDA FoodData Central, then manufacturer labels (Open Food Facts) and any optional databases, then web references found with Gemini's Google Search tool (accepted only with a source link), and finally an AI estimate that is clearly labeled "not verified". You review the result, edit grams or remove items, and only **Confirm and save** writes to the database. Each item stores its source, source link, verified or AI-estimated status, confidence, time eaten, and the original text you entered. Corrections go through the same review and keep the earlier version in `meal_revisions`.
+How it works: Gemini identifies the foods, ingredients, portions, meal type and confidence. If it is confident, the meal is saved automatically and the daily totals update at once. If anything is below `CONFIDENCE_THRESHOLD`, or a portion can't be estimated, the chat asks a follow-up question and saves nothing until you answer. Every logged meal has **Undo** and **Correct** buttons. Nutrition comes from USDA FoodData Central first, then manufacturer labels (Open Food Facts) and optional databases, then web references found with Gemini's Google Search tool (accepted only with a source link), and finally an AI estimate that is labeled "(estimated)". Each item stores its source, source link, verified or AI-estimated status, confidence, time eaten and your original text. Corrections keep the earlier version in `meal_revisions`.
 
-Endpoints: `POST /api/meals/analyze`, `POST /api/meals/confirm`, `POST /api/meals/:id/reprocess`, `GET /api/meals?day=`, `GET /api/meals/history?from=&to=`, `GET /api/meals/:id`, `DELETE /api/meals/:id`, `GET /api/summary?period=day|week|month&date=`.
+Main endpoint: `POST /api/chat`. Others: `GET /api/meals?day=`, `GET /api/meals/history?from=&to=`, `GET /api/meals/:id`, `DELETE /api/meals/:id`, `GET /api/summary?period=day|week|month&date=`.

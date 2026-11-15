@@ -1,6 +1,6 @@
 const crypto = require('crypto');
 const jwt = require('jsonwebtoken');
-const { sb } = require('./supabase');
+const { sb, listLog } = require('./supabase');
 const gem = require('./gemini');
 const nut = require('./nutrition');
 
@@ -92,8 +92,8 @@ async function resolveNutrition(items) {
 }
 
 // Never writes to the database. Returns needs_clarification or review.
-async function pipeline(input) {
-  const ai = input.items ? { items: input.items } : await gem.analyzeMeal(input);
+async function pipeline(input, pre) {
+  const ai = pre || (input.items ? { items: input.items } : await gem.analyzeMeal(input));
   const items = ai.items;
   if (!items.length) return { status: 'needs_clarification', items: [], questions: [
     { item: -1, reason: 'nothing_found', question: 'I could not identify any food. Describe what you ate, with rough amounts.' }] };
@@ -204,6 +204,17 @@ async function summary(uid, period, date, withTrend = true) {
   return out;
 }
 
+// ---------- chat helpers ----------
+const byTime = h => (h < 11 ? 'Breakfast' : h < 15 ? 'Lunch' : h < 21 ? 'Dinner' : 'Snacks');
+const askText = r => 'Before I log this:\n' + r.questions.map(q => q.question).join('\n');
+function savedText(m, notices) {
+  const srcs = [...new Set(m.items.map(i => (i.verification === 'ai_estimated' ? 'AI estimate' : i.source)))];
+  return `Logged to ${m.meal}:\n` + m.items.map(i => `• ${i.name} (${Math.round(i.grams)} g): ${Math.round(i.kcal)} kcal, P ${r1(i.protein)} g, C ${r1(i.carbs)} g, F ${r1(i.fat)} g` +
+    (i.verification === 'ai_estimated' ? ' (estimated)' : '')).join('\n') +
+    `\nMeal total: ${Math.round(m.totals.kcal)} kcal, P ${r1(m.totals.protein)} g, C ${r1(m.totals.carbs)} g, F ${r1(m.totals.fat)} g` +
+    `\nSources: ${srcs.join(', ')}` + (notices && notices.length ? '\n' + notices.join('\n') : '');
+}
+
 // ---------- routes ----------
 function mount(app, { h, bad, DAY }) {
   const hh = fn => h(async (req, res) => { try { await fn(req, res); } catch (e) { if (e instanceof BadInput) return bad(res, e.message); throw e; } });
@@ -253,6 +264,48 @@ function mount(app, { h, bad, DAY }) {
     } else id = await createMeal(req.uid, { ...d, meal }, items);
     used.add(d.n);
     res.json({ status: 'saved', meal: await getMeal(req.uid, id) });
+  }));
+
+  // Conversational logging: analyzes the message and saves automatically when confident, otherwise asks a follow-up question.
+  app.post('/api/chat', hh(async (req, res) => {
+    const b = req.body || {};
+    if (!DAY.test(b.day || '')) return bad(res, 'Choose a valid day.');
+    const message = String(b.text || '').trim().slice(0, 2000), image = parseImage(b.image);
+    if (!message && !image) throw new BadInput('Type a message or add a photo.');
+    const t = new Date(b.eaten_at), eaten_at = isNaN(t) ? new Date().toISOString() : t.toISOString();
+    const hour = Number.isInteger(b.hour) && b.hour >= 0 && b.hour < 24 ? b.hour : new Date().getUTCHours();
+    const pending = b.pending && typeof b.pending === 'object' ? b.pending : null;
+
+    let replace = null, base;
+    if (pending) {                                   // the user is answering my last question
+      replace = pending.replace || null;
+      base = { text: String(pending.text || '').slice(0, 2000), clarifications: message, previous: pending.items ? cleanItems(pending.items) : null, image };
+    } else if (b.replace) {                          // the user is correcting an earlier meal
+      const m = await getRow(req.uid, b.replace);
+      if (!m) return bad(res, 'Meal not found.', 404);
+      replace = m.id;
+      const cur = ok(await sb.from('meal_items').select('name, grams, quantity, unit').eq('meal_id', m.id));
+      base = { text: m.input_text || '', clarifications: message, previous: cleanItems(cur), image: null };
+    } else base = { text: message, clarifications: '', previous: null, image };
+    if (replace && !(await getRow(req.uid, replace))) return bad(res, 'Meal not found.', 404);
+    if (limited(req.uid)) return bad(res, 'AI limit reached for this hour. Try again later.', 429);
+
+    const rows = [...(await listLog(req.uid, b.day)), ...(await itemsAsLog(req.uid, b.day))];
+    const tot = k => r1(rows.reduce((a, x) => a + (x[k] || 0), 0));
+    const ai = await gem.analyzeMeal({ ...base, context: `${tot('kcal')} kcal, protein ${tot('p')} g, carbs ${tot('c')} g, fat ${tot('f')} g` });
+    if (!ai.is_meal && !pending && !replace) return res.json({ status: 'chat', reply: ai.reply || 'Tell me what you ate and I will log it for you.' });
+    if (pending || replace) ai.items.forEach(i => { if (i.grams > 0) { i.food_confidence = 1; i.portion_confidence = 1; } });   // the user just answered, so treat as confirmed
+
+    const r = await pipeline({ items: null }, ai);
+    if (r.status !== 'review') return res.json({ status: 'ask', reply: askText(r), pending: { text: base.text, items: r.items, replace } });   // nothing saved yet
+
+    const detected = MEALS.includes(ai.meal_type) ? ai.meal_type : null;
+    let id;
+    if (replace) { const m = await getRow(req.uid, replace); await replaceItems(req.uid, m, m.meal, r.items); id = m.id; }
+    else id = await createMeal(req.uid, { day: b.day, meal: detected || byTime(hour), meal_type: detected, text: base.text,
+      type: typeOf(base.text, image), eaten_at }, r.items);
+    const saved = await getMeal(req.uid, id);
+    res.json({ status: 'saved', reply: savedText(saved, r.notices), meal: saved });
   }));
 
   app.get('/api/meals/history', hh(async (req, res) => {

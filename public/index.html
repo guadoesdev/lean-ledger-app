@@ -76,8 +76,8 @@ function logout(){setToken(null);S=empty();tab='today';render()}
 function fail(e){$('#msg').textContent=e&&e.message?e.message:''}
 async function loadAll(){
   try{
-    const[p,T,c,w,l]=await Promise.all([api('/profile'),api('/targets'),api('/foods/mine'),api('/weights'),api('/log?day='+date)]);
-    S={profile:p,T,custom:c,weights:Object.fromEntries(w.map(x=>[x.day,x.kg])),log:l,results:S.results};
+    const[p,T,w,l]=await Promise.all([api('/profile'),api('/targets'),api('/weights'),api('/log?day='+date)]);
+    S={profile:p,T,weights:Object.fromEntries(w.map(x=>[x.day,x.kg])),log:l,results:S.results};
     if(!p)tab='goals';fail();
   }catch(e){fail(e)}
   render();
@@ -92,7 +92,7 @@ function renderNav(){
   <strong style="margin:0 8px">${new Date(date+'T12:00:00').toLocaleDateString(undefined,{weekday:'short',month:'short',day:'numeric'})}</strong>
   <button class="btn ghost" onclick="go(1)" aria-label="Next day">›</button>
   <button class="btn ghost" onclick="logout()" style="margin-left:8px">Log out</button>`;
-  $('#tabs').innerHTML=[['today','Today'],['ai','AI meal'],['summary','Summary'],['weight','Weight'],['foods','My foods'],['goals','Goals']]
+  $('#tabs').innerHTML=[['today','Today'],['summary','Summary'],['weight','Weight'],['goals','Goals']]
     .map(t=>`<button class="${tab===t[0]?'on':''}" onclick="tab='${t[0]}';render()">${t[1]}</button>`).join('');
 }
 function go(n){date=shift(date,n);refreshLog()}
@@ -119,24 +119,14 @@ function viewToday(){
   <div class="bar ${left<0?'over':''}"><i style="width:${Math.min(100,t.kcal/T.k*100)}%"></i></div>
   ${bar('Protein',t.p,T.p,'g','pro')}${bar('Carbs',t.c,T.c,'g')}${bar('Fat',t.f,T.f,'g')}${bar('Sodium',t.na,T.na,'mg')}
   <div class="mute">Fiber ${Math.round(t.fi)} g · Calories ${Math.round(t.kcal)} of ${T.k}</div></div>`;
+  h+=typeof chatPanel==='function'?chatPanel():'';
   for(const m of MEALS){
     const es=S.log.filter(e=>e.meal===m);
     h+=`<div class="card"><div class="row"><strong>${m}</strong><span class="mute">${Math.round(es.reduce((a,e)=>a+e.kcal,0))} kcal</span></div>`;
     h+=es.length?es.map(e=>`<div class="entry"><span>${esc(e.name)}<br><span class="mute">${e.qty} × ${esc(e.sv)} · ${Math.round(e.kcal)} kcal · ${r1(e.p)} g protein</span></span><button class="x" onclick="del('${e.id}')" aria-label="Remove">×</button></div>`).join(''):'<p class="mute" style="margin:6px 0 0">Nothing logged yet.</p>';
     h+='</div>';
   }
-  return h+`<h2>Add food</h2><div class="card"><div style="display:flex;gap:8px;flex-wrap:wrap">
-  <input id="q" placeholder="Search foods" value="${esc(q)}" oninput="q=this.value;res()" style="flex:1;min-width:160px">
-  <select onchange="meal=this.value">${MEALS.map(m=>`<option ${m===meal?'selected':''}>${m}</option>`).join('')}</select></div><div id="res"></div></div>`;
-}
-async function res(){
-  try{S.results=await api('/foods?q='+encodeURIComponent(q.trim()))}catch(e){return}
-  const box=$('#res');if(!box)return;
-  box.innerHTML=S.results.length?S.results.map(f=>`<div class="res"><span>${esc(f.n)}<br><span class="mute">${esc(f.s)} · ${f.k} kcal · ${f.p} g protein</span></span>
-  <span><input type="number" id="qty${f.id}" value="1" min="0.25" step="0.25" aria-label="Servings"> <button class="btn" onclick="addFood('${f.id}')">Add</button></span></div>`).join(''):'<p class="mute">No match. Create it under My foods.</p>';
-}
-async function addFood(id){
-  try{await api('/log',{method:'POST',body:{day:date,meal,foodId:id,qty:parseFloat($('#qty'+id).value)||1}});await refreshLog()}catch(e){fail(e)}
+  return h;
 }
 async function del(id){try{await api('/log/'+id,{method:'DELETE'});await refreshLog()}catch(e){fail(e)}}
 
@@ -169,20 +159,6 @@ async function saveW(){
   try{await api('/weights/'+date,{method:'PUT',body:{kg:parseFloat($('#w').value)}});await loadAll()}catch(e){fail(e)}
 }
 
-// ---------- my foods ----------
-function viewFoods(){
-  const f=(id,l,ph='')=>`<label>${l}<input id="${id}" ${id==='cn'||id==='cs'?'':'type="number" step="0.1" min="0"'} placeholder="${ph}"></label>`;
-  return`<div class="card"><strong>Create a food</strong><p class="mute">Enter the values for one serving, as printed on the label.</p>
-  <div class="grid">${f('cn','Name')}${f('cs','Serving','1 cup')}${f('ck','Calories')}${f('cp','Protein (g)')}${f('cc','Carbs (g)')}${f('cf','Fat (g)')}${f('cna','Sodium (mg)')}${f('cfi','Fiber (g)')}</div>
-  <p><button class="btn" onclick="addCustom()">Save food</button></p></div>
-  <div class="card">${S.custom.length?S.custom.map(c=>`<div class="entry"><span>${esc(c.n)}<br><span class="mute">${esc(c.s)} · ${c.k} kcal · ${c.p} g protein</span></span><button class="x" onclick="delCustom('${c.id}')" aria-label="Delete food">×</button></div>`).join(''):'<p class="mute">Your saved foods will appear here.</p>'}</div>`;
-}
-async function addCustom(){
-  const g=id=>$('#'+id).value,n=id=>parseFloat(g(id))||0;
-  try{await api('/foods',{method:'POST',body:{n:g('cn'),s:g('cs'),k:n('ck'),p:n('cp'),c:n('cc'),f:n('cf'),na:n('cna'),fi:n('cfi')}});S.custom=await api('/foods/mine');fail();render()}catch(e){fail(e)}
-}
-async function delCustom(id){try{await api('/foods/'+id,{method:'DELETE'});S.custom=await api('/foods/mine');render()}catch(e){fail(e)}}
-
 // ---------- goals ----------
 function viewGoals(){
   const p=S.profile||{sex:'m',a:30,h:175,w:80,gw:75,act:1.55,def:400,ppk:2,na:2300},T=S.T;
@@ -214,8 +190,8 @@ function render(){
   renderNav();
   const v=$('#view');
   if(!token){v.innerHTML=viewAuth();return}
-  v.innerHTML=tab==='ai'&&S.profile?viewAI():tab==='summary'&&S.profile?viewSummary():tab==='today'&&S.profile?viewToday():tab==='weight'&&S.profile?viewWeight():tab==='foods'?viewFoods():viewGoals();
-  if($('#res'))res();
+  v.innerHTML=tab==='summary'&&S.profile?viewSummary():tab==='today'&&S.profile?viewToday():tab==='weight'&&S.profile?viewWeight():viewGoals();
+  if($('#chat')&&typeof scrollChat==='function')scrollChat();
 }
 token?loadAll():render();
 </script>
