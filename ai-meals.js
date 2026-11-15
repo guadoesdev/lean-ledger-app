@@ -215,6 +215,12 @@ function savedText(m, notices) {
     `\nSources: ${srcs.join(', ')}` + (notices && notices.length ? '\n' + notices.join('\n') : '');
 }
 
+// Saves chat messages so the day's conversation stays visible. A failure here never blocks logging a meal.
+async function say(uid, day, role, text, extra = {}) {
+  try { ok(await sb.from('chat_messages').insert({ user_id: uid, day, role, text: String(text).slice(0, 4000), meal_id: extra.meal_id || null, pending: extra.pending || null })); }
+  catch (e) { console.warn('Could not save chat message (did you run schema_chat.sql?):', e.message); }
+}
+
 // ---------- routes ----------
 function mount(app, { h, bad, DAY }) {
   const hh = fn => h(async (req, res) => { try { await fn(req, res); } catch (e) { if (e instanceof BadInput) return bad(res, e.message); throw e; } });
@@ -290,14 +296,19 @@ function mount(app, { h, bad, DAY }) {
     if (replace && !(await getRow(req.uid, replace))) return bad(res, 'Meal not found.', 404);
     if (limited(req.uid)) return bad(res, 'AI limit reached for this hour. Try again later.', 429);
 
+    await say(req.uid, b.day, 'user', message || '(photo)');
+    const out = async (payload, extra = {}) => { await say(req.uid, b.day, 'bot', payload.reply, extra); res.json(payload); };
     const rows = [...(await listLog(req.uid, b.day)), ...(await itemsAsLog(req.uid, b.day))];
     const tot = k => r1(rows.reduce((a, x) => a + (x[k] || 0), 0));
     const ai = await gem.analyzeMeal({ ...base, context: `${tot('kcal')} kcal, protein ${tot('p')} g, carbs ${tot('c')} g, fat ${tot('f')} g` });
-    if (!ai.is_meal && !pending && !replace) return res.json({ status: 'chat', reply: ai.reply || 'Tell me what you ate and I will log it for you.' });
+    if (!ai.is_meal && !pending && !replace) return out({ status: 'chat', reply: ai.reply || 'Tell me what you ate and I will log it for you.' });
     if (pending || replace) ai.items.forEach(i => { if (i.grams > 0) { i.food_confidence = 1; i.portion_confidence = 1; } });   // the user just answered, so treat as confirmed
 
     const r = await pipeline({ items: null }, ai);
-    if (r.status !== 'review') return res.json({ status: 'ask', reply: askText(r), pending: { text: base.text, items: r.items, replace } });   // nothing saved yet
+    if (r.status !== 'review') {   // nothing saved yet
+      const pend = { text: base.text, items: r.items, replace };
+      return out({ status: 'ask', reply: askText(r), pending: pend }, { pending: pend });
+    }
 
     const detected = MEALS.includes(ai.meal_type) ? ai.meal_type : null;
     let id;
@@ -305,7 +316,22 @@ function mount(app, { h, bad, DAY }) {
     else id = await createMeal(req.uid, { day: b.day, meal: detected || byTime(hour), meal_type: detected, text: base.text,
       type: typeOf(base.text, image), eaten_at }, r.items);
     const saved = await getMeal(req.uid, id);
-    res.json({ status: 'saved', reply: savedText(saved, r.notices), meal: saved });
+    await out({ status: 'saved', reply: savedText(saved, r.notices), meal: saved }, { meal_id: saved.id });
+  }));
+
+  app.get('/api/chat/history', hh(async (req, res) => {
+    if (!DAY.test(req.query.day || '')) return bad(res, 'Invalid date.');
+    const ms = ok(await sb.from('chat_messages').select('*').eq('user_id', req.uid).eq('day', req.query.day).order('id').limit(300));
+    const ids = [...new Set(ms.map(m => m.meal_id).filter(Boolean))];
+    const alive = new Set(ids.length ? ok(await sb.from('meals').select('id').in('id', ids)).map(m => m.id) : []);
+    res.json(ms.map(m => ({ role: m.role, text: m.text, meal_id: m.meal_id, pending: m.pending, undone: !!m.meal_id && !alive.has(m.meal_id) })));
+  }));
+  app.post('/api/chat/cancel', hh(async (req, res) => {
+    const day = (req.body || {}).day;
+    if (!DAY.test(day || '')) return bad(res, 'Invalid date.');
+    try { ok(await sb.from('chat_messages').update({ pending: null }).eq('user_id', req.uid).eq('day', day).not('pending', 'is', null)); } catch (e) {}
+    await say(req.uid, day, 'bot', 'Okay, nothing was logged.');
+    res.json({ ok: true });
   }));
 
   app.get('/api/meals/history', hh(async (req, res) => {

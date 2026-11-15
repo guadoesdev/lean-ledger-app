@@ -29,10 +29,10 @@ Open http://localhost:3000 and create an account.
 - Before going live: HTTPS, a strong `JWT_SECRET`, login rate limiting, and keeping `.env` out of source control.
 
 ## AI meal chat (Gemini)
-1. In Supabase, run `schema_ai.sql`, then `schema_ai_v2.sql`.
+1. In Supabase, run `schema_ai.sql`, then `schema_ai_v2.sql`, then `schema_chat.sql` (this one keeps each day's chat visible).
 2. Add keys to `.env` and to Render's environment variables: `GEMINI_API_KEY` (Google AI Studio) and `USDA_API_KEY` (free, fdc.nal.usda.gov). Nutritionix and Edamam are optional.
 3. On the **Today** tab, type what you ate in the chat, or add a photo, and press Send.
 
 How it works: Gemini identifies the foods, ingredients, portions, meal type and confidence. If it is confident, the meal is saved automatically and the daily totals update at once. If anything is below `CONFIDENCE_THRESHOLD`, or a portion can't be estimated, the chat asks a follow-up question and saves nothing until you answer. Every logged meal has **Undo** and **Correct** buttons. Nutrition comes from USDA FoodData Central first, then manufacturer labels (Open Food Facts) and optional databases, then web references found with Gemini's Google Search tool (accepted only with a source link), and finally an AI estimate that is labeled "(estimated)". Each item stores its source, source link, verified or AI-estimated status, confidence, time eaten and your original text. Corrections keep the earlier version in `meal_revisions`.
 
-Main endpoint: `POST /api/chat`. Others: `GET /api/meals?day=`, `GET /api/meals/history?from=&to=`, `GET /api/meals/:id`, `DELETE /api/meals/:id`, `GET /api/summary?period=day|week|month&date=`.
+Main endpoint: `POST /api/chat`. Chat history: `GET /api/chat/history?day=`. Others: `GET /api/meals?day=`, `GET /api/meals/history?from=&to=`, `GET /api/meals/:id`, `DELETE /api/meals/:id`, `GET /api/summary?period=day|week|month&date=`.
