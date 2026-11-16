@@ -3,7 +3,14 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const path = require('path');
 const dv = require('./supabase');
+const { sb } = require('./supabase');
 const ai = require('./ai-meals');
+const {
+  data: { user },
+  error,
+} = await sb.auth.getUser(token);
+console.log('user:', user?.id);
+console.log('error:', error);
 
 const SECRET = process.env.JWT_SECRET || 'dev-only-change-me';
 if (!process.env.JWT_SECRET) console.warn('Warning: set JWT_SECRET before deploying.');
