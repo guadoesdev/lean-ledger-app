@@ -42,8 +42,14 @@ app.post('/api/login', h(async (req, res) => {
   if (!u || !bcrypt.compareSync(c.password, u.pass)) return bad(res, 'Email or password is incorrect.', 401);
   res.json({ token: sign(u.id) });
 }));
+app.get('/api/config', (req, res) => {
+  res.json({
+    supabaseUrl: process.env.SUPABASE_URL,
+    supabaseKey: process.env.SUPABASE_PUBLISHABLE_KEY
+  });
+});
 app.use('/api', (req, res, next) => {
-  if (req.path === '/login' || req.path === '/register') return next();
+  if (req.path === '/login' || req.path === '/register' || req.path === '/config') return next();
   try { req.uid = jwt.verify((req.headers.authorization || '').slice(7), SECRET).id; next(); }
   catch (e) { bad(res, 'Please log in again.', 401); }
 });
@@ -54,7 +60,7 @@ app.get('/api/profile', h(async (req, res) => res.json(await dv.getProfile(req.u
 app.put('/api/profile', h(async (req, res) => {
   const b = req.body || {};
   if (!['m', 'f'].includes(b.sex) || !num(b.a, 10, 110) || !num(b.h, 100, 250) || !num(b.w, 30, 400) ||
-      !num(b.gw, 30, 400) || !num(b.act, 1.2, 2) || !num(b.def, 0, 2000) || !num(b.ppk, 0.5, 4) || !num(b.na, 500, 6000))
+    !num(b.gw, 30, 400) || !num(b.act, 1.2, 2) || !num(b.def, 0, 2000) || !num(b.ppk, 0.5, 4) || !num(b.na, 500, 6000))
     return bad(res, 'Check your numbers. One of the values is out of range.');
   await dv.saveProfile(req.uid, b);
   res.json(await dv.getProfile(req.uid));
@@ -98,8 +104,10 @@ app.post('/api/log', h(async (req, res) => {
   if (!DAY.test(day || '') || !MEALS.includes(meal) || !num(qty, 0.1, 100)) return bad(res, 'Invalid entry.');
   const f = await dv.getFood(req.uid, foodId);
   if (!f) return bad(res, 'Food not found.', 404);
-  const id = await dv.addLog(req.uid, { day, meal, name: f.n, sv: f.s, qty,
-    kcal: r1(f.k * qty), p: r1(f.p * qty), c: r1(f.c * qty), f: r1(f.f * qty), na: r1(f.na * qty), fi: r1(f.fi * qty) });
+  const id = await dv.addLog(req.uid, {
+    day, meal, name: f.n, sv: f.s, qty,
+    kcal: r1(f.k * qty), p: r1(f.p * qty), c: r1(f.c * qty), f: r1(f.f * qty), na: r1(f.na * qty), fi: r1(f.fi * qty)
+  });
   res.json({ id });
 }));
 app.delete('/api/log/:id', h(async (req, res) => {
