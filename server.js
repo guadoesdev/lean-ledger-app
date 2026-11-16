@@ -48,12 +48,39 @@ app.get('/api/config', (req, res) => {
     supabaseKey: process.env.SUPABASE_PUBLISHABLE_KEY
   });
 });
-app.use('/api', (req, res, next) => {
-  if (req.path === '/login' || req.path === '/register' || req.path === '/config') return next();
-  try { req.uid = jwt.verify((req.headers.authorization || '').slice(7), SECRET).id; next(); }
-  catch (e) { bad(res, 'Please log in again.', 401); }
-});
+app.use('/api', async (req, res, next) => {
+  if (
+    req.path === '/config' ||
+    req.path === '/login' ||
+    req.path === '/register'
+  ) {
+    return next();
+  }
 
+  try {
+    const auth = req.headers.authorization || '';
+
+    if (!auth.startsWith('Bearer ')) {
+      return bad(res, 'Please log in again.', 401);
+    }
+
+    const token = auth.slice(7);
+
+    const {
+      data: { user },
+      error,
+    } = await supabase.auth.getUser(token);
+
+    if (error || !user) {
+      return bad(res, 'Please log in again.', 401);
+    }
+
+    req.uid = user.id;
+    next();
+  } catch (err) {
+    return bad(res, 'Please log in again.', 401);
+  }
+});
 // ---------- profile and targets ----------
 app.get('/api/profile', h(async (req, res) => res.json(await dv.getProfile(req.uid))));
 
