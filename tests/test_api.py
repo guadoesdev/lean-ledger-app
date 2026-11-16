@@ -1,22 +1,33 @@
 """
 Black-box tests for the Lean Ledger HTTP API. They call a running server, so start it first (npm start).
 
+    SUPABASE_URL=https://your-ref.supabase.co \
+    SUPABASE_PUBLISHABLE_KEY=... SUPABASE_SERVICE_ROLE_KEY=... \
     BASE_URL=http://localhost:3000 pytest tests/test_api.py -v
+
+Sign-in is handled by Supabase Auth, so the tests create confirmed test users through the Supabase admin API, sign
+them in to get real access tokens, and delete them (and their app data) when the run ends. Use a development
+Supabase project, not your real one. Leftovers, if a run is interrupted:
+    delete from users where email like 'test+%@example.com';   (and remove the same users under Authentication)
 
 Optional:
     RUN_AI_TESTS=1   also run the live Gemini tests (they use your Gemini and USDA keys and cost a little)
-
-These tests write to the database that the server is connected to. Each test registers its own throwaway user
-(test+<random>@example.com), so use a development Supabase project, not your real data. Clean up afterwards with:
-    delete from users where email like 'test+%@example.com';
 """
+import base64
+import hashlib
+import hmac
+import json
 import os
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 import requests
 
 BASE_URL = os.environ.get("BASE_URL", "http://localhost:3000").rstrip("/")
+SUPABASE_URL = os.environ.get("SUPABASE_URL", "").rstrip("/")
+PUBLISHABLE_KEY = os.environ.get("SUPABASE_PUBLISHABLE_KEY") or os.environ.get("SUPABASE_ANON_KEY", "")
+SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
 RUN_AI = os.environ.get("RUN_AI_TESTS") == "1"
 TIMEOUT = 90                      # generous, because a free Render service can take a while to wake up
 PASSWORD = "Test-password-12345"
@@ -33,8 +44,37 @@ def call(method, path, token=None, **kw):
     return requests.request(method, BASE_URL + path, headers=headers, timeout=TIMEOUT, **kw)
 
 
+def admin_headers():
+    h = {"apikey": SERVICE_KEY, "Content-Type": "application/json"}
+    if SERVICE_KEY.startswith("eyJ"):          # legacy service_role keys are JWTs; new secret keys go in apikey only
+        h["Authorization"] = f"Bearer {SERVICE_KEY}"
+    return h
+
+
+_created = []                                  # Supabase user ids to delete at the end of the run
+
+
+def create_user():
+    """Creates a confirmed Supabase Auth user and signs in, like the browser does. Returns its access token."""
+    email = f"test+{uuid.uuid4().hex[:12]}@example.com"
+    r = requests.post(f"{SUPABASE_URL}/auth/v1/admin/users", headers=admin_headers(), timeout=TIMEOUT,
+                      json={"email": email, "password": PASSWORD, "email_confirm": True})
+    assert r.status_code in (200, 201), r.text
+    auth_id = r.json()["id"]
+    _created.append(auth_id)
+    r = requests.post(f"{SUPABASE_URL}/auth/v1/token?grant_type=password", timeout=TIMEOUT,
+                      headers={"apikey": PUBLISHABLE_KEY, "Content-Type": "application/json"},
+                      json={"email": email, "password": PASSWORD})
+    assert r.status_code == 200, r.text
+    return {"email": email, "auth_id": auth_id, "token": r.json()["access_token"]}
+
+
 @pytest.fixture(scope="session", autouse=True)
 def server_up():
+    missing = [n for n, v in (("SUPABASE_URL", SUPABASE_URL), ("SUPABASE_PUBLISHABLE_KEY", PUBLISHABLE_KEY),
+                              ("SUPABASE_SERVICE_ROLE_KEY", SERVICE_KEY)) if not v]
+    if missing:
+        pytest.skip("Set " + ", ".join(missing) + " to run the API tests (they sign in through Supabase Auth).")
     try:
         r = call("GET", "/api/profile")
     except requests.RequestException as e:
@@ -42,21 +82,22 @@ def server_up():
     assert r.status_code == 401, f"{BASE_URL} does not look like the Lean Ledger API (got {r.status_code})"
 
 
-def register():
-    email = f"test+{uuid.uuid4().hex[:12]}@example.com"
-    r = call("POST", "/api/register", json={"email": email, "password": PASSWORD})
-    assert r.status_code == 200, r.text
-    return {"email": email, "token": r.json()["token"]}
+@pytest.fixture(scope="session", autouse=True)
+def cleanup(server_up):
+    yield
+    for auth_id in _created:                   # remove our own rows first (they cascade), then the auth user
+        requests.delete(f"{SUPABASE_URL}/rest/v1/users", params={"auth_id": f"eq.{auth_id}"}, headers=admin_headers(), timeout=TIMEOUT)
+        requests.delete(f"{SUPABASE_URL}/auth/v1/admin/users/{auth_id}", headers=admin_headers(), timeout=TIMEOUT)
 
 
 @pytest.fixture
 def user():
-    return register()
+    return create_user()
 
 
 @pytest.fixture
 def other():
-    return register()
+    return create_user()
 
 
 def make_food(token, **over):
@@ -71,43 +112,46 @@ def log_food(token, food_id, day=DAY, meal="Breakfast", qty=1):
     return r.json()["id"]
 
 
-# ------------------------------------------------------------------ authentication
+def b64(data):
+    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
+
+
+def forged_hs256_token(secret="anything"):
+    """A token shaped like the app's old login tokens, signed with a made-up secret."""
+    head = b64(json.dumps({"alg": "HS256", "typ": "JWT"}).encode())
+    body = b64(json.dumps({"id": 1, "sub": str(uuid.uuid4()), "role": "authenticated"}).encode())
+    sig = b64(hmac.new(secret.encode(), f"{head}.{body}".encode(), hashlib.sha256).digest())
+    return f"{head}.{body}.{sig}"
+
+
+# ------------------------------------------------------------------ authentication (Supabase Auth)
 
 class TestAuth:
-    def test_register_returns_a_token(self):
-        assert register()["token"]
-
-    @pytest.mark.parametrize("email", ["", "not-an-email", "a@b", "two words@x.com"])
-    def test_register_rejects_bad_email(self, email):
-        r = call("POST", "/api/register", json={"email": email, "password": PASSWORD})
-        assert r.status_code == 400 and "email" in r.json()["error"].lower()
-
-    def test_register_rejects_short_password(self):
-        r = call("POST", "/api/register", json={"email": f"test+{uuid.uuid4().hex[:10]}@example.com", "password": "short"})
-        assert r.status_code == 400 and "8 characters" in r.json()["error"]
-
-    def test_register_rejects_missing_body(self):
-        assert call("POST", "/api/register", json={}).status_code == 400
-
-    def test_duplicate_email_is_rejected(self, user):
-        r = call("POST", "/api/register", json={"email": user["email"], "password": PASSWORD})
-        assert r.status_code == 409
-
-    def test_login_succeeds(self, user):
-        r = call("POST", "/api/login", json={"email": user["email"], "password": PASSWORD})
-        assert r.status_code == 200 and r.json()["token"]
-
-    def test_login_email_is_case_insensitive(self, user):
-        r = call("POST", "/api/login", json={"email": user["email"].upper(), "password": PASSWORD})
+    def test_config_is_public_and_has_no_secrets(self):
+        r = call("GET", "/api/config")
         assert r.status_code == 200
+        body = r.json()
+        assert set(body) == {"supabaseUrl", "supabaseKey"} and body["supabaseUrl"] and body["supabaseKey"]
+        assert body["supabaseKey"] != SERVICE_KEY         # only the public key may be exposed
 
-    def test_login_wrong_password(self, user):
-        r = call("POST", "/api/login", json={"email": user["email"], "password": "Wrong-password-1"})
-        assert r.status_code == 401
+    def test_supabase_token_is_accepted(self, user):
+        assert call("GET", "/api/profile", user["token"]).status_code == 200
 
-    def test_login_unknown_email(self):
-        r = call("POST", "/api/login", json={"email": f"nobody+{uuid.uuid4().hex}@example.com", "password": PASSWORD})
-        assert r.status_code == 401
+    def test_first_requests_in_parallel_create_one_account(self, user):
+        # the page sends several requests at once on load; they must all succeed and share one account
+        with ThreadPoolExecutor(5) as pool:
+            codes = list(pool.map(lambda p: call("GET", p, user["token"]).status_code,
+                                  ["/api/profile", "/api/targets", "/api/weights", f"/api/log?day={DAY}", "/api/foods/mine"]))
+        assert codes == [200] * 5
+        call("PUT", "/api/profile", user["token"], json=PROFILE)
+        assert call("GET", "/api/profile", user["token"]).json() == PROFILE
+
+    def test_same_user_signing_in_again_keeps_their_data(self, user):
+        call("PUT", "/api/profile", user["token"], json=PROFILE)
+        r = requests.post(f"{SUPABASE_URL}/auth/v1/token?grant_type=password", timeout=TIMEOUT,
+                          headers={"apikey": PUBLISHABLE_KEY}, json={"email": user["email"], "password": PASSWORD})
+        assert r.status_code == 200
+        assert call("GET", "/api/profile", r.json()["access_token"]).json() == PROFILE
 
     @pytest.mark.parametrize("method, path", [
         ("GET", "/api/profile"), ("PUT", "/api/profile"), ("GET", "/api/targets"), ("GET", "/api/foods?q=a"),
@@ -122,6 +166,16 @@ class TestAuth:
 
     def test_garbage_token_is_rejected(self):
         assert call("GET", "/api/profile", token="garbage").status_code == 401
+
+    def test_forged_token_is_rejected(self):
+        assert call("GET", "/api/profile", token=forged_hs256_token()).status_code == 401
+
+    def test_public_key_is_not_a_user_token(self):
+        assert call("GET", "/api/profile", token=PUBLISHABLE_KEY).status_code == 401
+
+    def test_old_register_and_login_routes_are_gone(self, user):
+        assert call("POST", "/api/register", user["token"], json={"email": "a@b.co", "password": PASSWORD}).status_code == 404
+        assert call("POST", "/api/login", user["token"], json={"email": user["email"], "password": PASSWORD}).status_code == 404
 
     def test_unknown_route_returns_404(self, user):
         r = call("GET", "/api/does-not-exist", user["token"])

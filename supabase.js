@@ -10,13 +10,6 @@ const isId = s => /^\d+$/.test(String(s));
 const n = v => (typeof v === 'number' ? v : 0);
 const mine = uid => `user_id.is.null,user_id.eq.${Number(uid)}`;   // built-in foods plus this user's own
 
-// ---------- users ----------
-const userByEmail = async email => {
-  const r = ok(await sb.from('users').select('id, pass').eq('email', email).maybeSingle());
-  return r && { id: r.id, pass: r.pass };
-};
-const createUser = async (email, pass) => ok(await sb.from('users').insert({ email, pass }).select('id').single()).id;
-
 // ---------- profile ----------
 const PF = { sex: 'sex', a: 'age', h: 'height', w: 'start_weight', gw: 'goal_weight',
   act: 'activity', def: 'deficit', ppk: 'protein_per_kg', na: 'sodium' };
@@ -71,5 +64,5 @@ async function removeLog(uid, id) {
   if (isId(id)) ok(await sb.from('log_entries').delete().eq('id', id).eq('user_id', uid));
 }
 
-module.exports = { sb, userByEmail, createUser, getProfile, saveProfile, listWeights, saveWeight,
+module.exports = { sb, getProfile, saveProfile, listWeights, saveWeight,
   searchFoods, myFoods, getFood, createFood, removeFood, hasBuiltInFoods, listLog, addLog, removeLog };

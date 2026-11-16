@@ -49,6 +49,7 @@ label{display:flex;flex-direction:column;gap:4px;font-size:14px;color:var(--mute
 <div id="view"></div>
 </main>
 
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <script>
 const MEALS=['Breakfast','Lunch','Dinner','Snacks'];
 const $=s=>document.querySelector(s);
@@ -57,7 +58,7 @@ const r1=n=>Math.round(n*10)/10;
 const iso=d=>d.toLocaleDateString('en-CA');
 const shift=(d,n)=>{const t=new Date(d+'T12:00:00');t.setDate(t.getDate()+n);return iso(t)};
 
-let token=null;try{token=localStorage.getItem('ll-token')}catch(e){}
+let token=null,sbc=null;   // token = the Supabase access token for the signed-in user
 const empty=()=>({profile:null,T:null,custom:[],log:[],weights:{},results:[]});
 let S=empty(),date=iso(new Date()),tab='today',q='',meal='Breakfast';
 
@@ -71,8 +72,7 @@ async function api(path,o={}){
   if(!r.ok)throw new Error((j&&j.error)||'Something went wrong. Try again.');
   return j;
 }
-function setToken(t){token=t;try{t?localStorage.setItem('ll-token',t):localStorage.removeItem('ll-token')}catch(e){}}
-function logout(){setToken(null);S=empty();tab='today';render()}
+async function logout(){try{await sbc.auth.signOut()}catch(e){}token=null;S=empty();tab='today';render()}
 function fail(e){$('#msg').textContent=e&&e.message?e.message:''}
 async function loadAll(){
   try{
@@ -98,13 +98,31 @@ function renderNav(){
 function go(n){date=shift(date,n);refreshLog()}
 
 // ---------- auth ----------
-const viewAuth=()=>`<div class="card"><div class="grid">
+const viewAuth=()=>`<div class="card"><strong>Sign in to Lean Ledger</strong>
+  <p style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" onclick="oauth('google')">Continue with Google</button>
+  <button class="btn" onclick="oauth('github')">Continue with GitHub</button></p>
+  <p class="mute">Or use your email</p><div class="grid">
   <label>Email<input id="em" type="email" autocomplete="username"></label>
   <label>Password (8+ characters)<input id="pw" type="password" autocomplete="current-password"></label></div>
-  <p><button class="btn" onclick="doAuth('login')">Log in</button> <button class="btn ghost" onclick="doAuth('register')">Create account</button></p></div>`;
-async function doAuth(kind){
-  try{const r=await api('/'+kind,{method:'POST',body:{email:$('#em').value,password:$('#pw').value}});setToken(r.token);await loadAll()}
-  catch(e){fail(e)}
+  <p><button class="btn" onclick="emailAuth('in')">Log in</button> <button class="btn ghost" onclick="emailAuth('up')">Create account</button></p></div>`;
+async function oauth(provider){
+  fail();
+  const {error}=await sbc.auth.signInWithOAuth({provider,options:{redirectTo:location.origin}});
+  if(error)fail(error);
+}
+async function emailAuth(kind){
+  fail();
+  const email=$('#em').value.trim(),password=$('#pw').value;
+  try{
+    if(kind==='up'){
+      const {data,error}=await sbc.auth.signUp({email,password,options:{emailRedirectTo:location.origin}});
+      if(error)throw error;
+      if(!data.session)$('#msg').textContent='Check your email to confirm your account, then log in.';
+    }else{
+      const {error}=await sbc.auth.signInWithPassword({email,password});
+      if(error)throw error;
+    }
+  }catch(e){fail(e)}
 }
 
 // ---------- today ----------
@@ -208,7 +226,7 @@ function chatPanel() {
   return `<h2>Log a meal</h2><div class="card"><div id="chat" style="max-height:420px;overflow-y:auto" aria-live="polite">${chatHtml()}</div>
     <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap"><input id="cin" placeholder="What did you eat?" style="flex:1;min-width:180px" onkeydown="if(event.key==='Enter')chatSend()" aria-label="Describe your meal">
     <label class="btn ghost" style="cursor:pointer;display:inline-block">Photo<input type="file" id="caf" accept="image/*" hidden onchange="pickImg(this)"></label>
-    <button class="btn" id="cbtn" onclick="chatSend()">Send</button></div><span id="aimg" class="mute"></span></div>`;
+    <button class="btn" id="cbtn" onclick="chatSend()">Send</button><button class="btn ghost" onclick="chatCheck()">Check setup</button></div><span id="aimg" class="mute"></span></div>`;
 }
 const renderChat = () => { const b = $('#chat'); if (b) { b.innerHTML = chatHtml(); scrollChat(); } };
 function scrollChat() { const b = $('#chat'); if (b) b.scrollTop = b.scrollHeight; }
@@ -274,6 +292,16 @@ async function chatCancel() {
   try { await api('/chat/cancel', { method: 'POST', body: { day: date } }); } catch (e) {}
 }
 
+async function chatCheck() {
+  A.msgs.push({ role: 'bot', text: 'Checking the AI setup...' }); renderChat();
+  try {
+    const r = await api('/ai/check');
+    A.msgs.pop();
+    A.msgs.push({ role: 'bot', text: 'Setup check:\n' + Object.entries(r).map(([k, v]) => `${/^(ok|set)/.test(v) ? 'OK' : 'FIX'}  ${k}: ${v}`).join('\n') });
+  } catch (e) { A.msgs.pop(); A.msgs.push({ role: 'bot', text: (e && e.message) || 'The check failed.', err: true }); }
+  renderChat();
+}
+
 // ---------- summary tab: day, week and month totals, trends and history ----------
 function viewSummary() {
   setTimeout(loadSum, 0);
@@ -310,7 +338,21 @@ function render(){
   v.innerHTML=tab==='summary'&&S.profile?viewSummary():tab==='today'&&S.profile?viewToday():tab==='weight'&&S.profile?viewWeight():viewGoals();
   if($('#chat'))scrollChat();
 }
-token?loadAll():render();
+async function boot(){
+  try{
+    const cfg=await (await fetch('/api/config')).json();
+    if(!cfg.supabaseUrl||!cfg.supabaseKey)throw new Error('The server is missing SUPABASE_PUBLISHABLE_KEY.');
+    sbc=supabase.createClient(cfg.supabaseUrl,cfg.supabaseKey,{auth:{flowType:'pkce',autoRefreshToken:true,persistSession:true,detectSessionInUrl:true}});
+    sbc.auth.onAuthStateChange((event,session)=>{
+      const was=token;token=session?session.access_token:null;
+      if(event==='SIGNED_OUT'){S=empty();tab='today';render();return}
+      if(session&&!was)setTimeout(loadAll,0);   // first sign-in or a restored session (token refreshes just update the token)
+    });
+    const {data}=await sbc.auth.getSession();
+    if(!data.session)render();
+  }catch(e){fail(e);render()}
+}
+boot();
 </script>
 </body>
 </html>

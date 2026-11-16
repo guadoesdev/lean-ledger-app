@@ -25,8 +25,24 @@ Open http://localhost:3000 and create an account.
 
 ## Notes
 - Users never talk to Supabase directly. Only the server does, and every query filters by `user_id`, which keeps one user's data private from another's. Do not remove those filters.
-- Login is still handled by this app (email, bcrypt-hashed password, JWT). If you would rather use Supabase Auth, the data layer can be changed to rely on row level security policies instead.
+- Sign-in is handled by Supabase Auth (see the next section). The server checks the Supabase token on every request and maps it to its own `users` row.
 - Before going live: HTTPS, a strong `JWT_SECRET`, login rate limiting, and keeping `.env` out of source control.
+
+## Sign-in with Supabase Auth (email, Google, GitHub)
+Users sign in in the browser with Supabase Auth. The server never sees passwords: it only verifies the Supabase access token (`auth.js`).
+
+1. In Supabase's SQL Editor, run `schema_auth.sql`.
+2. **Authentication > URL Configuration:** set **Site URL** to your Render address (for example `https://lean-ledger-app.onrender.com`) and add it, plus `http://localhost:3000`, under **Redirect URLs**.
+3. **Authentication > Sign In / Providers:**
+   - **Email:** keep it on. Leave "Confirm email" on, so an address is proven before it can be linked to older data.
+   - **Google:** create an OAuth client in Google Cloud Console and paste its client ID and secret into Supabase. Add Supabase's callback URL (shown on that page, `https://<project-ref>.supabase.co/auth/v1/callback`) as an authorized redirect URI in Google.
+   - **GitHub:** create an OAuth app in GitHub (Settings > Developer settings), use the same Supabase callback URL, and paste the client ID and secret into Supabase.
+4. Leave **Allow anonymous sign-ins** off.
+5. Copy the **publishable** key (or the legacy anon key) from **Project Settings > API Keys** into `SUPABASE_PUBLISHABLE_KEY`, in `.env` and in Render's environment variables. This key is meant to be public. Never put the service role key in the browser.
+
+**Existing accounts:** passwords were not moved to Supabase. A person with an older account signs in with the same email through Google or GitHub, or uses **Create account** with that email and confirms it. Because Supabase has then verified the address, the older data is linked to the new sign-in. Unverified addresses are never linked.
+
+Supabase also offers an "OAuth 2.1 Server" (beta) that lets other apps or AI agents sign in through your project. This app does not need it.
 
 ## AI meal chat (Gemini)
 1. In Supabase, run `schema_ai.sql`, then `schema_ai_v2.sql`, then `schema_chat.sql` (this one keeps each day's chat visible).
