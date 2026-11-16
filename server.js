@@ -5,12 +5,7 @@ const path = require('path');
 const dv = require('./supabase');
 const { sb } = require('./supabase');
 const ai = require('./ai-meals');
-const {
-  data: { user },
-  error,
-} = await sb.auth.getUser(token);
-console.log('user:', user?.id);
-console.log('error:', error);
+
 
 const SECRET = process.env.JWT_SECRET || 'dev-only-change-me';
 if (!process.env.JWT_SECRET) console.warn('Warning: set JWT_SECRET before deploying.');
@@ -67,6 +62,8 @@ app.use('/api', async (req, res, next) => {
   try {
     const auth = req.headers.authorization || '';
 
+    console.log('Auth header:', auth ? 'present' : 'missing');
+
     if (!auth.startsWith('Bearer ')) {
       return bad(res, 'Please log in again.', 401);
     }
@@ -76,7 +73,10 @@ app.use('/api', async (req, res, next) => {
     const {
       data: { user },
       error,
-    } = await supabase.auth.getUser(token);
+    } = await sb.auth.getUser(token);
+
+    console.log('User:', user?.id);
+    console.log('Error:', error);
 
     if (error || !user) {
       return bad(res, 'Please log in again.', 401);
@@ -85,6 +85,7 @@ app.use('/api', async (req, res, next) => {
     req.uid = user.id;
     next();
   } catch (err) {
+    console.error(err);
     return bad(res, 'Please log in again.', 401);
   }
 });
